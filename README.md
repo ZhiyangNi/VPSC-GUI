@@ -1,160 +1,178 @@
 # VPSC-GUI
 
-**VPSC-GUI** is a Python graphical pre- and post-processing environment for simulations performed with the Visco-Plastic Self-Consistent (VPSC) code. The program keeps the original VPSC8 Fortran solver unchanged and provides a structured graphical workflow for editing VPSC input files, launching a user-supplied external solver and visualizing standard VPSC output files.
+VPSC-GUI is a Python graphical pre- and post-processing environment for simulations performed with the Visco-Plastic Self-Consistent (VPSC) code. The program keeps the original VPSC8 Fortran solver unchanged and provides a structured graphical workflow for editing VPSC input files, launching a user-supplied external solver and visualizing standard VPSC output files.
 
 The software is designed for researchers working on crystal plasticity, texture evolution, polycrystalline plasticity, plastic anisotropy, Lankford coefficients, yield loci and deformation-mode activity in metallic materials.
 
-## Main features
-
-- Project configuration for VPSC case folders, control files, external executables and output directories.
-- Structured editing of `VPSC8.IN`, single-crystal `.sx` files, texture files and process/boundary-condition files.
-- Pole figure and inverse pole figure visualization for cubic and HCP textures.
-- Boundary-condition visualization for velocity-gradient and Cauchy-stress constraints.
-- External VPSC8 solver execution from a reproducible run directory.
-- Direct post-processing of common VPSC outputs, including:
-  - `STR_STR.OUT` for stress-strain curves,
-  - `RUN_LOG.OUT` for solver logs,
-  - `TEX_PH*.OUT` for texture evolution,
-  - `PCYS.OUT` for polycrystal yield loci,
-  - `LANKFORD.OUT` for Lankford coefficients and directional Young's moduli,
-  - `ACT_PH*.OUT` for relative slip/twin activity.
-- Publication-oriented plotting with Matplotlib.
-
 All representative figures in the associated SoftwareX manuscript were generated directly within VPSC-GUI.
 
-## Important note on the VPSC executable
+## Main features
 
-This repository does **not** redistribute the original VPSC/VPSC8 executable. VPSC-GUI is a graphical workflow layer around an external solver. Users must provide their own properly licensed VPSC executable and select it in the **Project** panel before running simulations.
+* Project configuration for VPSC case folders, control files, external executables and output directories.
+* Structured editing of `VPSC8.IN`, single-crystal `.sx` files, texture files and process/boundary-condition files.
+* Pole figure and inverse pole figure visualization for cubic and HCP textures.
+* Boundary-condition visualization for velocity-gradient and Cauchy-stress constraints.
+* External VPSC8 solver execution from a reproducible run directory.
+* Direct post-processing of common VPSC output files, including:
 
-For this reason, files such as `vpsc8.exe`, `VPSC8.EXE` or other third-party executables should not be committed to this repository.
+  * `STR_STR.OUT` for stress-strain curves,
+  * `RUN_LOG.OUT` for solver logs,
+  * `TEX_PH*.OUT` for texture evolution,
+  * `PCYS.OUT` for polycrystal yield loci,
+  * `LANKFORD.OUT` for Lankford coefficients and directional Young's moduli,
+  * `ACT_PH*.OUT` for relative slip/twin activity.
+* Publication-oriented plotting with Matplotlib.
 
-## Repository structure
+## Important note on the VPSC solver
 
-A typical repository layout is:
+This repository does not include or redistribute the original VPSC executable.
 
-```text
-VPSC-GUI/
-├── src/
-│   └── vpsc_gui/
-│       ├── __init__.py
-│       ├── __main__.py        # optional launcher
-│       └── app.py             # main GUI and scientific utilities
-├── examples/
-│   ├── FCC_rolling/
-│   └── HCP_compression/
-├── tests/
-├── README.md
-├── LICENSE
-├── CITATION.cff
-├── MANIFEST.in
-└── pyproject.toml
-```
-
-The example folders should contain only input files and lightweight demonstration data. Generated run folders and solver outputs are ignored by `.gitignore`.
+Users should obtain, compile or provide their own properly licensed VPSC8 executable. VPSC-GUI only provides the Python graphical workflow layer for input preparation, solver execution and post-processing.
 
 ## Installation
 
-Clone the repository and install it in editable mode:
+Clone the repository:
 
 ```bash
 git clone https://github.com/ZhiyangNi/VPSC-GUI.git
 cd VPSC-GUI
+```
+
+Install the package in editable mode:
+
+```bash
 python -m pip install -e .
 ```
 
-The required Python packages are:
+## Running the app
+
+The recommended launch command is:
 
 ```bash
-python -m pip install numpy matplotlib
+python -m vpsc_gui
 ```
 
-`scipy` is optional and is used only for smoother density-map filtering when available:
-
-```bash
-python -m pip install scipy
-```
-
-Tkinter is required to launch the graphical interface. It is included in many Python distributions. On Debian/Ubuntu, it may need to be installed separately:
-
-```bash
-sudo apt install python3-tk
-```
-
-## Running the application
-
-After installation:
+If the console script is generated successfully during installation, the app can also be launched with:
 
 ```bash
 vpsc-gui
 ```
 
-or, from the repository root:
-
-```bash
-python src/vpsc_gui/app.py
-```
-
-The self-test can be run without launching the graphical interface:
-
-```bash
-python src/vpsc_gui/app.py --self-test
-```
-
-or with a specified working directory:
-
-```bash
-python src/vpsc_gui/app.py --self-test examples
-```
-
 ## Basic workflow
 
-1. Open the **Project** panel and choose:
-   - base case folder,
-   - `VPSC8.IN`,
-   - external VPSC8 executable,
-   - output root directory.
-2. Use the **VPSC8.IN**, **Single Crystal**, **Texture** and **Process / BC** panels to inspect and edit input files.
-3. Prepare and run the case in the **Run** panel.
-4. Use the **Results** panel to draw solver logs, stress-strain curves, pole figures, yield loci, Lankford coefficients, Young's moduli and relative activity curves.
-5. Export the generated figures for reports or publications.
+1. Open VPSC-GUI.
+2. Go to the **Project** panel.
+3. Select the base directory of a VPSC case.
+4. Select the `VPSC8.IN` file.
+5. Select the local VPSC8 executable.
+6. Apply the project paths.
+7. Inspect or edit the input files using:
+
+   * **VPSC8.IN**,
+   * **Single Crystal**,
+   * **Texture**,
+   * **Process / BC**.
+8. Use the **Run** panel to prepare a run directory and launch the external solver.
+9. Use the **Results** panel to visualize and export output figures.
 
 ## Examples
 
-The repository contains two representative examples.
+The repository contains two representative examples:
 
-### `examples/FCC_rolling`
-
-This example demonstrates a typical FCC rolling simulation and post-processing workflow. It is used to show solver logs, stress-strain response, pole figure visualization, polycrystal yield locus, Lankford coefficient and directional Young's modulus.
-
-### `examples/HCP_compression`
-
-This example demonstrates compression of an HCP magnesium aggregate. It is used to show initial and deformed (0002) pole figures, the macroscopic stress-strain curve and the relative activity of basal slip, prismatic slip, pyramidal slip and tensile twinning.
-
-## Citation
-
-If you use VPSC-GUI in your research, please cite the associated SoftwareX article and the software release. A machine-readable citation file is provided as `CITATION.cff`.
-
-```bibtex
-@software{vpsc_gui_2026,
-  author  = {Ni, Zhiyang and Guo, Min and Chen, Zhanghua and Dong, Jianxin and Jiang, He},
-  title   = {VPSC-GUI: A Python graphical pre- and post-processing environment for VPSC8},
-  version = {1.0.0},
-  year    = {2026},
-  url     = {https://github.com/ZhiyangNi/VPSC-GUI}
-}
+```text
+examples/
+├── FCC_rolling/
+└── HCP_compression/
 ```
+
+### FCC_rolling
+
+This example demonstrates an FCC rolling case and can be used to test:
+
+* VPSC input-file loading,
+* texture preview,
+* boundary-condition visualization,
+* solver execution,
+* stress-strain plotting,
+* pole figure visualization,
+* polycrystal yield locus plotting,
+* Lankford coefficient plotting,
+* directional Young's modulus plotting.
+
+### HCP_compression
+
+This example demonstrates an HCP magnesium compression case and can be used to test:
+
+* HCP texture visualization,
+* initial and deformed `(0002)` pole figures,
+* compressive stress-strain response,
+* relative activity of deformation modes such as basal slip, prismatic slip, pyramidal slip and tensile twinning.
+
+## Repository structure
+
+```text
+VPSC-GUI/
+├── docs/
+├── examples/
+│   ├── FCC_rolling/
+│   └── HCP_compression/
+├── src/
+│   └── vpsc_gui/
+│       ├── __init__.py
+│       ├── __main__.py
+│       └── app.py
+├── tests/
+├── .gitignore
+├── CITATION.cff
+├── LICENSE
+├── MANIFEST.in
+├── README.md
+└── pyproject.toml
+```
+
+## Dependencies
+
+VPSC-GUI requires Python 3.9 or later.
+
+The main Python dependencies are:
+
+```text
+numpy
+matplotlib
+```
+
+The graphical interface is based on Tkinter, which is included with most standard Python installations.
+
+## Testing installation
+
+After installation, run:
+
+```bash
+python -m vpsc_gui
+```
+
+If the graphical interface opens correctly, the installation is successful.
 
 ## License
 
-VPSC-GUI is released under the BSD 3-Clause License. See `LICENSE` for details.
+VPSC-GUI is distributed under the BSD-3-Clause License.
 
-The original VPSC/VPSC8 solver is not included in this repository and is not covered by this license.
+The original VPSC solver is not part of this repository and is not redistributed under this license.
+
+## Citation
+
+If you use VPSC-GUI in academic work, please cite the associated SoftwareX article and the repository.
+
+A citation file is provided in:
+
+```text
+CITATION.cff
+```
 
 ## Contact
 
-For questions related to this software, please contact:
+For questions, suggestions or bug reports, please use the GitHub issue tracker:
 
-**He Jiang**  
-School of Materials Science and Engineering  
-University of Science and Technology Beijing  
-Email: jianghe17@sina.cn
+```text
+https://github.com/ZhiyangNi/VPSC-GUI/issues
+```
