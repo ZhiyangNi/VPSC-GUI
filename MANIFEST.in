@@ -1,0 +1,33 @@
+include README.md
+include LICENSE
+include CITATION.cff
+include pyproject.toml
+
+recursive-include src/vpsc_gui *.py
+recursive-include examples *.in *.sx *.tex *.3 *.txt *.md *.json
+recursive-include docs *.md *.png *.pdf
+
+prune build
+prune dist
+prune *.egg-info
+prune .git
+prune .github
+prune .pytest_cache
+prune __pycache__
+prune examples/*/vpsc_case_*
+prune examples/*/vpsc_runs
+prune examples/*/outputs
+prune examples/*/results
+
+global-exclude __pycache__/*
+global-exclude *.py[cod]
+global-exclude *.so
+global-exclude *.dll
+global-exclude *.dylib
+global-exclude *.exe
+global-exclude vpsc*.exe
+global-exclude VPSC*.EXE
+global-exclude *.odb *.sim *.sta *.msg *.prt *.com *.lck *.fil
+global-exclude STR_STR.OUT STR_STR_STATS.OUT ACT_PH*.OUT TEX_PH*.OUT
+global-exclude LANKFORD.OUT PCYS.OUT PCYSwNORMALS.OUT PCYSwRATES.OUT
+global-exclude EL-TH-MODULI.OUT RUN_LOG.OUT RERR.OUT
