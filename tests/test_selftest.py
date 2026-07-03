@@ -12,7 +12,7 @@ def test_module_selftest_runs():
     result = subprocess.run(
         cmd,
         cwd=root,
-        env={**__import__("os").environ, "PYTHONPATH": str(root / "repo" / "src")},
+        env={**__import__("os").environ, "PYTHONPATH": str(root / "src")},
         text=True,
         capture_output=True,
         timeout=60,

@@ -92,8 +92,8 @@ except Exception:  # pragma: no cover
     gaussian_filter = None
     SCIPY_AVAILABLE = False
 
-__version__ = "1.0.0"
-__license__ = "MIT"
+__version__ = "1.0.1"
+__license__ = "BSD-3-Clause"
 APP_VERSION = f"vpsc-app-{__version__}"
 LOG = logging.getLogger("vpsc_app")
 logging.basicConfig(
@@ -318,6 +318,38 @@ def _next_nonempty_nonstar(lines: List[str], start: int) -> Tuple[int, str]:
     return len(lines), ""
 
 
+def clean_vpsc_filename(value: str) -> str:
+    """Return the file token from a VPSC input line.
+
+    VPSC examples commonly place bare file names on a line, while users may add
+    inline comments after ``!`` or ``#``.  The parser keeps path separators and
+    quoted paths intact but removes comments and surrounding quotes.
+    """
+    s = str(value or "").strip()
+    if not s:
+        return ""
+    s = re.split(r"\s[#!]", s, maxsplit=1)[0].strip()
+    if (len(s) >= 2 and ((s[0] == s[-1] == '"') or (s[0] == s[-1] == "'"))):
+        s = s[1:-1].strip()
+    return s
+
+
+def is_dummy_file_reference(value: str) -> bool:
+    """True for VPSC placeholders that should not be copied or plotted."""
+    s = clean_vpsc_filename(value).strip().strip('"\'').lower()
+    return (not s) or s in {"dummy", "none", "null", "0", "-", "na", "n/a"}
+
+
+def phase_display_label(ph: PhaseInfo) -> str:
+    """Compact user-facing label for a phase selector."""
+    parts: List[str] = [f"Phase {ph.index}"]
+    if ph.crystal_file and not is_dummy_file_reference(ph.crystal_file):
+        parts.append(Path(ph.crystal_file).name)
+    elif ph.texture_file and not is_dummy_file_reference(ph.texture_file):
+        parts.append(Path(ph.texture_file).name)
+    return ": ".join(parts)
+
+
 def parse_vpsc8_in(path: Path) -> VPSCInInfo:
     """Parse VPSC8.IN by recognising its labelled comment blocks.
 
@@ -348,20 +380,20 @@ def parse_vpsc8_in(path: Path) -> VPSCInInfo:
         low = line.lower()
         if "texture file" in low:
             _, val = _next_nonempty_nonstar(lines, i + 1)
-            tex_files.append(val)
+            tex_files.append(clean_vpsc_filename(val))
         elif "single crystal file" in low:
             _, val = _next_nonempty_nonstar(lines, i + 1)
-            sx_files.append(val)
+            sx_files.append(clean_vpsc_filename(val))
         elif "grain shape file" in low:
             _, val = _next_nonempty_nonstar(lines, i + 1)
-            axes_files.append(val)
+            axes_files.append(clean_vpsc_filename(val))
         elif "diffraction file" in low:
             j, val = _next_nonempty_nonstar(lines, i + 1)
             # idiff flag line may precede the file name
             tok = numeric_tokens(val)
             if tok and len(tok) <= 1:
                 _, val = _next_nonempty_nonstar(lines, j + 1)
-            dif_files.append(val)
+            dif_files.append(clean_vpsc_filename(val))
 
     info.phases = [
         PhaseInfo(
@@ -404,7 +436,7 @@ def parse_vpsc8_in(path: Path) -> VPSCInInfo:
                 _, fname = _next_nonempty_nonstar(lines, j + 1)
                 if fname:
                     # Strip trailing inline comments like "filename.proc   ! label"
-                    fname = re.split(r"[#!]", fname, maxsplit=1)[0].strip()
+                    fname = clean_vpsc_filename(fname)
                     info.process_files.append(fname)
     return info
 
@@ -1058,7 +1090,7 @@ def draw_density(ax: Any, x: np.ndarray, y: np.ndarray, w: np.ndarray,
                  style: PlotStyle, region: str,
                  verts: Optional[np.ndarray] = None,
                  n_equivalents: int = 1) -> Any:
-    """Smoothed MRD-like density map for PF / IPF.
+    """Smoothed relative pole-density map for PF / IPF.
 
     The histogram is normalised by the *mean density over the valid projected
     domain*, including a factor ``1 / n_equivalents`` so that PF densities are
@@ -1108,8 +1140,9 @@ def draw_density(ax: Any, x: np.ndarray, y: np.ndarray, w: np.ndarray,
     cell_area = max((xlim[1] - xlim[0]) * (ylim[1] - ylim[0]) / (bins * bins), 1e-30)
     total_weight = max(float(np.nansum(w)), 1e-30)
     # total_weight is sum of replicated grain weights.  Dividing by n_equivalents
-    # recovers the underlying grain-weight total, so MRD becomes a per-crystal
-    # quantity.  For IPF, n_equivalents == 1 by construction.
+    # recovers the underlying grain-weight total.  The final map is
+    # normalized by the mean density over the valid projected region; a random
+    # texture is therefore close to one.  For IPF, n_equivalents == 1 by construction.
     grain_total = total_weight / max(n_equivalents, 1)
     mean_density = grain_total / max(valid_area, 1e-30)
     Z = (H / cell_area / max(n_equivalents, 1)) / max(mean_density, 1e-30)
@@ -1131,7 +1164,7 @@ def draw_density(ax: Any, x: np.ndarray, y: np.ndarray, w: np.ndarray,
             levels = list(np.linspace(float(np.nanmin(finite)),
                                        float(np.nanmax(finite)), nlev))
     else:
-        # For linear MRD maps start at zero so clipped cells at the PF/IPF
+        # For linear relative-density maps start at zero so clipped cells at the PF/IPF
         # boundary are filled with the lowest colour instead of becoming white
         # when their value is below the first level.
         zmin = (0.0 if not style.log_scale else float(np.nanmin(finite)))
@@ -2198,39 +2231,143 @@ def prepare_result_figure(fig: Figure) -> None:
     fig.subplots_adjust(left=0.10, right=0.97, bottom=0.12, top=0.92)
 
 
-def find_output_files(run_dir: Path) -> Dict[str, Path]:
-    """Find VPSC outputs case-insensitively and choose the most useful file."""
-    out: Dict[str, Path] = {}
+def _case_insensitive_child(base: Path, name: str) -> Optional[Path]:
+    """Resolve one path component below *base* case-insensitively."""
+    if not base.exists() or not base.is_dir():
+        return None
+    target = name.lower()
+    try:
+        for child in base.iterdir():
+            if child.name.lower() == target:
+                return child
+    except OSError:
+        return None
+    return None
+
+
+def resolve_case_file(base: Path, reference: str) -> Optional[Path]:
+    """Resolve a VPSC file reference relative to a case folder.
+
+    The lookup first tries the exact path and then falls back to a
+    case-insensitive component-by-component search.  This keeps Windows-created
+    cases usable on case-sensitive systems and avoids false missing-file reports
+    for ``Rand500.tex`` versus ``rand500.tex``.
+    """
+    ref = clean_vpsc_filename(reference)
+    if is_dummy_file_reference(ref):
+        return None
+    p = Path(ref)
+    exact = p if p.is_absolute() else base / p
+    if exact.exists():
+        return exact
+    cur = p.anchor and Path(p.anchor) or base
+    parts = list(p.parts[1:] if p.is_absolute() else p.parts)
+    if not parts:
+        return None
+    for part in parts:
+        nxt = _case_insensitive_child(cur, part)
+        if nxt is None:
+            return None
+        cur = nxt
+    return cur if cur.exists() else None
+
+
+def find_phase_output_files(run_dir: Path, prefix: str) -> List[Path]:
+    """Return phase-resolved output files such as ACT_PH1.OUT in phase order."""
     if not run_dir or not run_dir.exists():
-        return out
+        return []
+    pre = prefix.upper()
+    found: List[Tuple[int, str, Path]] = []
+    for p in run_dir.iterdir():
+        if not p.is_file():
+            continue
+        name = p.name.upper()
+        m = re.match(rf"{re.escape(pre)}_?PH(\d+)\.OUT$", name)
+        if m:
+            found.append((int(m.group(1)), p.name.upper(), p))
+    found.sort(key=lambda item: (item[0], item[1]))
+    return [p for _idx, _name, p in found]
+
+
+def find_phase_output_file(run_dir: Path, prefix: str, phase_index: int) -> Optional[Path]:
+    """Return a phase-resolved output file, e.g. TEX_PH2.OUT.
+
+    Matching is numerical on the phase index, so both ``TEX_PH2.OUT`` and
+    zero-padded variants such as ``TEX_PH02.OUT`` are accepted.  This mirrors
+    the native VPSC convention used by two-phase examples such as ``ex05_2ph``
+    while avoiding hard-coded file-order assumptions in the GUI.
+    """
+    if not run_dir or not run_dir.exists():
+        return None
+    pre = prefix.upper()
+    for p in find_phase_output_files(run_dir, pre):
+        m = re.search(r"PH(\d+)", p.name, re.IGNORECASE)
+        if m and int(m.group(1)) == int(phase_index):
+            return p
+    return None
+
+
+def find_output_file_groups(run_dir: Path) -> Dict[str, List[Path]]:
+    """Find VPSC outputs case-insensitively, preserving phase-resolved files."""
+    groups: Dict[str, List[Path]] = {}
+    if not run_dir or not run_dir.exists():
+        return groups
     files = [p for p in run_dir.iterdir() if p.is_file()]
     by_upper = [(p.name.upper(), p) for p in files]
 
-    def first_exact(name: str) -> Optional[Path]:
+    def exact(name: str) -> List[Path]:
         nameu = name.upper()
         matches = [p for u, p in by_upper if u == nameu]
-        if matches:
-            return sorted(matches, key=lambda x: x.stat().st_mtime, reverse=True)[0]
-        return None
+        return sorted(matches, key=lambda x: x.stat().st_mtime, reverse=True)
 
-    def first_prefix(prefix: str, suffix: str = ".OUT") -> Optional[Path]:
-        pre = prefix.upper()
-        suf = suffix.upper()
-        matches = [p for u, p in by_upper if u.startswith(pre) and u.endswith(suf)]
-        if matches:
-            return sorted(matches, key=lambda x: (x.stat().st_mtime, x.name),
-                          reverse=True)[0]
-        return None
+    groups["STR_STR"] = exact("STR_STR.OUT")
+    groups["ACT"] = find_phase_output_files(run_dir, "ACT")
+    groups["R"] = exact("LANKFORD.OUT")
+    groups["PCYS"] = exact("PCYS.OUT")
+    groups["TEX"] = find_phase_output_files(run_dir, "TEX")
+    groups["RUN_LOG"] = exact("RUN_LOG.OUT")
+    return {k: v for k, v in groups.items() if v}
 
-    mapping = {
-        "STR_STR": first_exact("STR_STR.OUT"),
-        "ACT": first_prefix("ACT_PH"),
-        "R": first_exact("LANKFORD.OUT"),
-        "PCYS": first_exact("PCYS.OUT"),
-        "TEX": first_prefix("TEX_PH"),
-        "RUN_LOG": first_exact("RUN_LOG.OUT"),
-    }
-    return {k: v for k, v in mapping.items() if v is not None}
+
+def find_output_files(run_dir: Path) -> Dict[str, Path]:
+    """Find VPSC outputs and choose a default file for each result type.
+
+    Phase-resolved files are retained by ``find_output_file_groups``.  This
+    compatibility wrapper returns the first phase/default file expected by the
+    existing plotting logic.
+    """
+    groups = find_output_file_groups(run_dir)
+    return {k: v[0] for k, v in groups.items() if v}
+
+
+def collect_vpsc_case_dependencies(base_dir: Path, info: VPSCInInfo) -> Tuple[List[Path], List[str]]:
+    """Collect input files referenced by VPSC8.IN and report missing dependencies."""
+    files: List[Path] = []
+    warnings: List[str] = []
+    seen: set[str] = set()
+
+    def add_reference(reference: str, role: str, required: bool = True) -> None:
+        ref = clean_vpsc_filename(reference)
+        if is_dummy_file_reference(ref):
+            return
+        p = resolve_case_file(base_dir, ref)
+        if p is None or not p.is_file():
+            level = "required" if required else "optional"
+            warnings.append(f"Missing {level} {role}: {ref}")
+            return
+        key = str(p.resolve()).lower()
+        if key not in seen:
+            seen.add(key)
+            files.append(p)
+
+    for ph in info.phases:
+        add_reference(ph.texture_file, f"phase {ph.index} texture file", required=True)
+        add_reference(ph.crystal_file, f"phase {ph.index} single-crystal file", required=True)
+        add_reference(ph.shape_file, f"phase {ph.index} grain-shape file", required=False)
+        add_reference(ph.diffraction_file, f"phase {ph.index} diffraction file", required=False)
+    for idx, proc in enumerate(info.process_files, start=1):
+        add_reference(proc, f"process file {idx}", required=True)
+    return files, warnings
 
 
 # =============================================================================
@@ -2256,26 +2393,42 @@ def prepare_run_dir(state: ProjectState, info: VPSCInInfo) -> Path:
     src_in = path_rel(state.base_dir, state.vpsc_in)
     if src_in.exists():
         txt = read_text(src_in)
-        # Write both common capitalisations to handle case-sensitive Fortran builds
+        # Write both common capitalisations to handle case-sensitive Fortran builds.
         for name in ["vpsc8.in", "VPSC8.IN", "VPSC8.in"]:
             write_text(run_dir / name, txt)
 
-    deps: List[str] = []
-    for ph in info.phases:
-        deps.extend([ph.texture_file, ph.crystal_file, ph.shape_file, ph.diffraction_file])
-    deps.extend(info.process_files)
-    for d in deps:
-        if not d or d.lower() == "dummy":
-            continue
-        p = path_rel(state.base_dir, d)
-        if p.exists() and p.is_file():
-            shutil.copy2(p, run_dir / p.name)
+    dependency_files, dependency_warnings = collect_vpsc_case_dependencies(state.base_dir, info)
+    for src in dependency_files:
+        dst = run_dir / src.name
+        try:
+            shutil.copy2(src, dst)
+        except OSError as e:
+            dependency_warnings.append(f"Could not copy {src}: {e}")
+
+    dependency_report = [
+        "VPSC-GUI dependency report",
+        "==========================",
+        f"Generated run directory: {run_dir}",
+        f"Number of phases: {info.nph}",
+        "",
+        "Copied input files:",
+    ]
+    dependency_report.extend(f"  - {p}" for p in dependency_files)
+    dependency_report.append("")
+    dependency_report.append("Warnings:")
+    dependency_report.extend(f"  - {w}" for w in dependency_warnings)
+    if not dependency_warnings:
+        dependency_report.append("  - none")
+    write_text(run_dir / "app_dependency_report.txt", "\n".join(dependency_report) + "\n")
 
     (run_dir / "app_project.json").write_text(json.dumps({
         "base_dir": str(state.base_dir),
         "vpsc_in": str(state.vpsc_in),
         "executable": str(state.executable),
         "backend": state.backend,
+        "nph": info.nph,
+        "phase_files": [ph.__dict__ for ph in info.phases],
+        "dependency_warnings": dependency_warnings,
     }, indent=2), encoding="utf-8")
     return run_dir
 
@@ -3756,7 +3909,7 @@ class VPSCApp(tk.Tk):
         )
         ttk.Label(
             header,
-            text="Fortran-compatible VPSC platform · texture3-style PF/IPF studio · boundary visualisation",
+            text="Fortran-compatible VPSC platform · PF/IPF studio · boundary visualisation",
             style="SubHeader.TLabel",
         ).pack(side="left", padx=10)
         ttk.Label(header, text=APP_VERSION, style="SubHeader.TLabel").pack(
@@ -5100,10 +5253,13 @@ class VPSCApp(tk.Tk):
             "Phase files:",
         ]
         for ph in self.vpsc_info.phases:
-            lines.append(
-                f"  Phase {ph.index}: texture={ph.texture_file}, "
-                f"crystal={ph.crystal_file}"
-            )
+            w = self.vpsc_info.wph[ph.index - 1] if ph.index - 1 < len(self.vpsc_info.wph) else None
+            weight_txt = f", weight={w:g}" if w is not None else ""
+            lines.append(f"  {phase_display_label(ph)}{weight_txt}")
+            lines.append(f"    texture     = {ph.texture_file or '—'}")
+            lines.append(f"    crystal     = {ph.crystal_file or '—'}")
+            lines.append(f"    grain shape = {ph.shape_file or '—'}")
+            lines.append(f"    diffraction = {ph.diffraction_file or '—'}")
         lines.append("")
         proc_summary = ", ".join(
             f"{f}(ivg={iv})"
@@ -5229,12 +5385,63 @@ class VPSCApp(tk.Tk):
         PARSE_CACHE.clear()  # invalidate
         self.vpsc_info = parse_vpsc8_in(path)
         self.update_dashboard()
+        self.update_solver_text()
+        self.refresh_phase_related_paths()
+
+    def _phase_options(self) -> List[str]:
+        phases = self.vpsc_info.phases or [PhaseInfo(index=1)]
+        return [phase_display_label(ph) for ph in phases]
+
+    def _phase_from_label(self, label: str) -> Optional[PhaseInfo]:
+        m = re.search(r"Phase\s+(\d+)", label or "", re.IGNORECASE)
+        if not m:
+            return self.vpsc_info.phases[0] if self.vpsc_info.phases else None
+        idx = int(m.group(1))
+        for ph in self.vpsc_info.phases:
+            if ph.index == idx:
+                return ph
+        return None
+
+    def _set_phase_combo_values(self) -> None:
+        values = self._phase_options()
+        for combo_name, var_name in (
+            ("sx_phase_combo", "var_sx_phase"),
+            ("texture_phase_combo", "var_texture_phase"),
+        ):
+            combo = getattr(self, combo_name, None)
+            var = getattr(self, var_name, None)
+            if combo is None or var is None:
+                continue
+            combo.configure(values=values)
+            if values and (not var.get() or var.get() not in values):
+                var.set(values[0])
+        self._refresh_result_phase_options()
+
+    def _on_sx_phase_selected(self, _event: Any = None) -> None:
+        ph = self._phase_from_label(self.var_sx_phase.get())
+        if ph is None:
+            return
+        if ph.crystal_file and not is_dummy_file_reference(ph.crystal_file):
+            self.var_sx_path.set(ph.crystal_file)
+            self.load_single_crystal()
+
+    def _on_texture_phase_selected(self, _event: Any = None) -> None:
+        ph = self._phase_from_label(self.var_texture_phase.get())
+        if ph is None:
+            return
+        if ph.texture_file and not is_dummy_file_reference(ph.texture_file):
+            self.var_texture_path.set(ph.texture_file)
+            self.load_texture()
 
     def refresh_phase_related_paths(self) -> None:
+        self._set_phase_combo_values()
         if self.vpsc_info.phases:
-            ph = self.vpsc_info.phases[0]
-            self.var_sx_path.set(ph.crystal_file)
-            self.var_texture_path.set(ph.texture_file)
+            sx_phase = self._phase_from_label(getattr(self, "var_sx_phase", tk.StringVar()).get()) or self.vpsc_info.phases[0]
+            tex_phase = self._phase_from_label(getattr(self, "var_texture_phase", tk.StringVar()).get()) or self.vpsc_info.phases[0]
+            if sx_phase.crystal_file and not is_dummy_file_reference(sx_phase.crystal_file):
+                self.var_sx_path.set(sx_phase.crystal_file)
+            if tex_phase.texture_file and not is_dummy_file_reference(tex_phase.texture_file):
+                self.var_texture_path.set(tex_phase.texture_file)
         if self.vpsc_info.process_files:
             self.var_process_path.set(self.vpsc_info.process_files[0])
         self.load_single_crystal()
@@ -5249,9 +5456,15 @@ class VPSCApp(tk.Tk):
         )
         bar = ttk.Frame(p)
         bar.pack(fill="x", pady=(0, 6))
+        self.var_sx_phase = tk.StringVar(value="Phase 1")
+        ttk.Label(bar, text="Phase", style="Muted.TLabel").pack(side="left", padx=(0, 4))
+        self.sx_phase_combo = ttk.Combobox(bar, textvariable=self.var_sx_phase,
+                                           values=self._phase_options(), state="readonly", width=28)
+        self.sx_phase_combo.pack(side="left", padx=(0, 8))
+        self.sx_phase_combo.bind("<<ComboboxSelected>>", self._on_sx_phase_selected)
         self.var_sx_path = tk.StringVar()
         ttk.Label(bar, text="SX file", style="Muted.TLabel").pack(side="left", padx=(0, 4))
-        ttk.Entry(bar, textvariable=self.var_sx_path, width=42).pack(side="left", padx=4)
+        ttk.Entry(bar, textvariable=self.var_sx_path, width=42).pack(side="left", fill="x", expand=True, padx=4)
         ttk.Button(bar, text="Browse", command=self.browse_sx).pack(side="left", padx=2)
         ttk.Button(bar, text="Reload", command=self.load_single_crystal).pack(
             side="left", padx=2
@@ -5453,6 +5666,12 @@ class VPSCApp(tk.Tk):
         )
         bar = ttk.Frame(p)
         bar.pack(fill="x", pady=(0, 6))
+        self.var_texture_phase = tk.StringVar(value="Phase 1")
+        ttk.Label(bar, text="Phase", style="Muted.TLabel").pack(side="left", padx=(0, 4))
+        self.texture_phase_combo = ttk.Combobox(bar, textvariable=self.var_texture_phase,
+                                                values=self._phase_options(), state="readonly", width=28)
+        self.texture_phase_combo.pack(side="left", padx=(0, 8))
+        self.texture_phase_combo.bind("<<ComboboxSelected>>", self._on_texture_phase_selected)
         self.var_texture_path = tk.StringVar()
         ttk.Label(bar, text="Texture file", style="Muted.TLabel").pack(
             side="left", padx=(0, 4)
@@ -6229,10 +6448,21 @@ class VPSCApp(tk.Tk):
         lines.append(f"Regime / IVGVAR: {info.regime}")
         lines.append(f"Number of phases: {len(info.phases)}")
         for i, ph in enumerate(info.phases, 1):
-            lines.append(f"  Phase {i}:")
-            lines.append(f"    crystal_file = {ph.crystal_file}")
-            lines.append(f"    texture_file = {ph.texture_file}")
-            lines.append(f"    grain_shape  = {ph.shape_file}")
+            w = info.wph[i - 1] if i - 1 < len(info.wph) else None
+            lines.append(f"  {phase_display_label(ph)}" + (f"  weight={w:g}" if w is not None else ""))
+            lines.append(f"    crystal_file     = {ph.crystal_file or '—'}")
+            lines.append(f"    texture_file     = {ph.texture_file or '—'}")
+            lines.append(f"    grain_shape      = {ph.shape_file or '—'}")
+            lines.append(f"    diffraction_file = {ph.diffraction_file or '—'}")
+        dependency_files, dependency_warnings = collect_vpsc_case_dependencies(self.state_data.base_dir, info)
+        lines.append("")
+        lines.append(f"Input dependencies resolved: {len(dependency_files)}")
+        if dependency_warnings:
+            lines.append("Dependency warnings:")
+            for msg in dependency_warnings:
+                lines.append(f"  - {msg}")
+        else:
+            lines.append("Dependency warnings: none")
         lines.append("")
         lines.append(f"Process files ({len(info.process_files)} found):")
         ivs = info.process_ivgvar or [0] * len(info.process_files)
@@ -6395,6 +6625,11 @@ class VPSCApp(tk.Tk):
                  "Texture PF", "Texture IPF"]
         ttk.Combobox(left, textvariable=self.var_result_kind, values=kinds,
                      state="readonly").pack(fill="x", pady=2)
+        ttk.Label(left, text="Result phase (ACT_PHn / TEX_PHn)", style="Muted.TLabel").pack(anchor="w", pady=(6, 0))
+        self.var_result_phase = tk.StringVar(value="Auto")
+        self.result_phase_combo = ttk.Combobox(left, textvariable=self.var_result_phase,
+                                               values=["Auto"], state="readonly")
+        self.result_phase_combo.pack(fill="x", pady=2)
         # Stress unit selector: VPSC writes stress quantities in the unit of the
         # .sx elastic constants (MPa here).  This lets the user view stress,
         # Young's modulus and PCYS axes in MPa or GPa without re-running.
@@ -6474,6 +6709,57 @@ class VPSCApp(tk.Tk):
         unit = getattr(self, "var_stress_unit", None)
         return unit.get() if unit is not None else "MPa"
 
+    def _current_run_dir_for_results(self) -> Optional[Path]:
+        text = getattr(self, "var_run_dir", tk.StringVar()).get().strip()
+        if text:
+            return Path(text)
+        rd = getattr(self.state_data, "last_run_dir", Path(""))
+        return rd if str(rd).strip() else None
+
+    def _phase_indices_from_outputs(self, run_dir: Optional[Path]) -> List[int]:
+        indices = {ph.index for ph in self.vpsc_info.phases}
+        if run_dir is not None and run_dir.exists():
+            for p in list(find_phase_output_files(run_dir, "ACT")) + list(find_phase_output_files(run_dir, "TEX")):
+                m = re.search(r"PH(\d+)", p.name, re.IGNORECASE)
+                if m:
+                    indices.add(int(m.group(1)))
+        return sorted(indices) or [1]
+
+    def _result_phase_label(self, idx: int, run_dir: Optional[Path]) -> str:
+        """User-facing phase label for phase-resolved VPSC outputs."""
+        parts = [f"Phase {idx}"]
+        ph = next((p for p in self.vpsc_info.phases if p.index == idx), None)
+        if ph and ph.crystal_file and not is_dummy_file_reference(ph.crystal_file):
+            parts.append(Path(ph.crystal_file).stem)
+        tags: List[str] = []
+        if run_dir is not None and run_dir.exists():
+            if find_phase_output_file(run_dir, "ACT", idx) is not None:
+                tags.append("ACT")
+            if find_phase_output_file(run_dir, "TEX", idx) is not None:
+                tags.append("TEX")
+        if tags:
+            parts.append("/".join(tags))
+        return " · ".join(parts)
+
+    def _refresh_result_phase_options(self) -> None:
+        combo = getattr(self, "result_phase_combo", None)
+        var = getattr(self, "var_result_phase", None)
+        if combo is None or var is None:
+            return
+        run_dir = self._current_run_dir_for_results()
+        phase_indices = self._phase_indices_from_outputs(run_dir)
+        values = ["Auto"] + [self._result_phase_label(idx, run_dir) for idx in phase_indices]
+        if run_dir and any(len(find_phase_output_files(run_dir, prefix)) > 1 for prefix in ("ACT", "TEX")):
+            values.append("All phases")
+        combo.configure(values=values)
+        if var.get() not in values:
+            var.set("Auto")
+
+    def _selected_result_phase_index(self) -> Optional[int]:
+        label = getattr(self, "var_result_phase", tk.StringVar(value="Auto")).get()
+        m = re.search(r"Phase\s+(\d+)", label or "", re.IGNORECASE)
+        return int(m.group(1)) if m else None
+
     def choose_run_dir(self) -> None:
         d = filedialog.askdirectory(initialdir=str(self.state_data.base_dir))
         if d:
@@ -6491,6 +6777,7 @@ class VPSCApp(tk.Tk):
             run_dir = rd if str(rd).strip() else None
             if run_dir is not None:
                 self.var_run_dir.set(str(run_dir))
+        self._refresh_result_phase_options()
         self.results_files.delete(*self.results_files.get_children())
         if run_dir is None or not run_dir.exists():
             return
@@ -6521,14 +6808,13 @@ class VPSCApp(tk.Tk):
     def _auto_result_paths_for_kind(self, kind: str) -> List[Path]:
         """Return appropriate output file(s) for a result kind.
 
-        Users frequently press Draw before selecting a file.  The Results page
-        should therefore behave like a post-processing dashboard: infer the
-        correct output file from the run directory and only fall back to the
-        Treeview selection when inference fails.
+        For phase-resolved outputs, the Results panel honours the selected
+        phase.  ``Auto`` chooses the first available phase, while ``All phases``
+        overlays all available activity curves.  Texture PF/IPF still plots one
+        phase at a time to avoid ambiguous PF normalisation.
         """
-        text = self.var_run_dir.get().strip()
-        run_dir = Path(text) if text else self.state_data.last_run_dir
-        outs = find_output_files(run_dir) if run_dir and run_dir.exists() else {}
+        run_dir = self._current_run_dir_for_results()
+        groups = find_output_file_groups(run_dir) if run_dir and run_dir.exists() else {}
         key_map = {
             "Stress-strain": "STR_STR",
             "Slip activity": "ACT",
@@ -6541,8 +6827,24 @@ class VPSCApp(tk.Tk):
             "Texture IPF": "TEX",
         }
         key = key_map.get(kind)
-        if key and key in outs:
-            return [outs[key]]
+        selected = getattr(self, "var_result_phase", tk.StringVar(value="Auto")).get()
+        phase_idx = self._selected_result_phase_index()
+
+        if key in {"ACT", "TEX"} and run_dir and run_dir.exists():
+            if selected == "All phases" and key == "ACT":
+                files = groups.get("ACT", [])
+                if files:
+                    return files
+            if phase_idx is not None:
+                specific = find_phase_output_file(run_dir, key, phase_idx)
+                if specific is not None:
+                    return [specific]
+            files = groups.get(key, [])
+            if files:
+                return [files[0]]
+
+        if key and key in groups and groups[key]:
+            return [groups[key][0]]
         sel = self.results_files.selection()
         return [Path(s) for s in sel if Path(s).exists()]
 
@@ -7264,12 +7566,20 @@ def texture3_deco_pf(ax: Any, *, proj: str, boundary: Optional[np.ndarray], mill
         if ires:
             ax.axhline(0, color="#cbd5e1", lw=0.45, zorder=0)
             ax.axvline(0, color="#cbd5e1", lw=0.45, zorder=0)
-        ax.text(1.065, 0.0, ix, va="center", ha="left", fontsize=8,
-                bbox=dict(boxstyle="round,pad=0.08", fc="white", ec="none", alpha=0.80))
-        ax.text(0.0, 1.065, iy, va="bottom", ha="center", fontsize=8,
-                bbox=dict(boxstyle="round,pad=0.08", fc="white", ec="none", alpha=0.80))
-        ax.set_xlim(-1.10, 1.30)
-        ax.set_ylim(-1.20, 1.20)
+        # Axis labels are placed outside the rim but below the Miller title.
+        # The extra vertical headroom avoids the overlap reported for multi-panel
+        # FCC/BCC pole figures when the colour bars are present.
+        # Keep the RD/TD labels clearly outside the rim while reserving a
+        # dedicated title band above them.  This prevents the Miller index
+        # label from touching the top-axis label in dense multi-panel layouts.
+        ax.text(1.075, 0.0, ix, va="center", ha="left", fontsize=8,
+                bbox=dict(boxstyle="round,pad=0.08", fc="white", ec="none", alpha=0.80),
+                clip_on=False)
+        ax.text(0.0, 1.060, iy, va="bottom", ha="center", fontsize=8,
+                bbox=dict(boxstyle="round,pad=0.08", fc="white", ec="none", alpha=0.80),
+                clip_on=False)
+        ax.set_xlim(-1.12, 1.36)
+        ax.set_ylim(-1.18, 1.42)
     else:
         if boundary is not None:
             ax.plot(boundary[0], boundary[1], "k-", lw=1.2, zorder=100, solid_joinstyle="round", solid_capstyle="round")
@@ -7283,12 +7593,20 @@ def texture3_deco_pf(ax: Any, *, proj: str, boundary: Optional[np.ndarray], mill
         else:
             ax.set_xlim(-0.05, 0.85)
             ax.set_ylim(-0.05, 0.85)
-    # Use compact Miller text such as (100), (0002), (10-10).
+    # Use compact Miller text such as (100), (0002), (10-10).  For PFs the
+    # title is drawn as data-coordinate text at x=0 above the TD label.  This
+    # keeps it exactly centred over the RD/TD crosshair and prevents Matplotlib
+    # from squeezing it into the top of the axes box.
     if isinstance(miller, (list, tuple, np.ndarray)):
         lab = "(" + "".join(str(int(v)) for v in miller) + ")"
     else:
         lab = str(miller)
-    ax.set_title(lab, fontsize=10, pad=2)
+    if proj == "pf":
+        ax.text(0.0, 1.320, lab, ha="center", va="bottom", fontsize=10,
+                fontweight="normal", clip_on=False, zorder=200,
+                bbox=dict(boxstyle="round,pad=0.08", fc="white", ec="none", alpha=0.82))
+    else:
+        ax.set_title(lab, fontsize=10, pad=4)
 
 
 class EmbeddedTexture3PoleFigure:
@@ -7365,7 +7683,7 @@ class EmbeddedTexture3PoleFigure:
         setattr(style, "texture3_mn", mn)
         setattr(style, "texture3_mx", mx)
         if fig is None:
-            fig = Figure(figsize=(3.3 * max(1, len(poles)), 3.0), dpi=100, facecolor="white")
+            fig = Figure(figsize=(3.85 * max(1, len(poles)), 3.55), dpi=100, facecolor="white")
         fig.clear()
         n = len(poles)
         ncols = min(3, max(1, n)); nrows = int(math.ceil(n / ncols))
@@ -7389,7 +7707,7 @@ class EmbeddedTexture3PoleFigure:
                         if mode2 == "dotc":
                             sc = ax.scatter(xy[:,0], xy[:,1], c=w, cmap=style.cmap, **kw)
                             if style.colorbar:
-                                fig.colorbar(sc, ax=ax, shrink=0.78, pad=0.08, fraction=0.046)
+                                fig.colorbar(sc, ax=ax, shrink=0.78, pad=0.12, fraction=0.046)
                         else:
                             ax.scatter(xy[:,0], xy[:,1], c=resolve_color(style.point_color), edgecolors="none", **kw)
                 else:
@@ -7410,7 +7728,7 @@ class EmbeddedTexture3PoleFigure:
                                    alpha=min(0.28, float(style.alpha)),
                                    edgecolors="none", rasterized=True)
                     if style.colorbar and cnt is not None and mode2 != "line":
-                        fig.colorbar(cnt, ax=ax, shrink=0.78, pad=0.08, fraction=0.046, label="MRD")
+                        fig.colorbar(cnt, ax=ax, shrink=0.78, pad=0.12, fraction=0.046)
                 texture3_deco_pf(ax, proj="pf", boundary=None, miller=pole, ix=ix, iy=iy, mode=mode2, ires=ires)
             else:
                 # texture3 originally offered IPF dot only; the app also provides contour/fill
@@ -7424,7 +7742,7 @@ class EmbeddedTexture3PoleFigure:
                                         s=float(style.point_size), marker=style.marker,
                                         alpha=float(style.alpha), rasterized=True)
                         if style.colorbar:
-                            fig.colorbar(sc, ax=ax, shrink=0.82, pad=0.08, fraction=0.046)
+                            fig.colorbar(sc, ax=ax, shrink=0.82, pad=0.12, fraction=0.046)
                     else:
                         ax.scatter(xy[:,0], xy[:,1], c=resolve_color(style.point_color),
                                    s=float(style.point_size), marker=style.marker,
@@ -7437,7 +7755,7 @@ class EmbeddedTexture3PoleFigure:
                     im = draw_density(ax, xy[:,0], xy[:,1], w, style, "triangle", verts=verts, n_equivalents=1)
                     style.texture_mode = mode_save
                     if style.colorbar and im is not None and mode2 != "line":
-                        fig.colorbar(im, ax=ax, shrink=0.82, pad=0.08, fraction=0.046, label="MRD")
+                        fig.colorbar(im, ax=ax, shrink=0.82, pad=0.12, fraction=0.046)
                     if mode2 == "fill+dot":
                         ax.scatter(xy[:,0], xy[:,1], c=resolve_color(style.point_color),
                                    s=max(1.0, float(style.point_size)*0.35), alpha=min(0.35, float(style.alpha)),
@@ -7472,7 +7790,7 @@ class EmbeddedTexture3PoleFigure:
                     pad = 0.14 * max(float(np.ptp(bx)), float(np.ptp(by)), 1e-6)
                     ax.set_xlim(float(np.min(bx) - pad), float(np.max(bx) + pad))
                     ax.set_ylim(float(np.min(by) - pad), float(np.max(by) + pad))
-        fig.tight_layout(pad=1.35, w_pad=2.6, h_pad=1.4)
+        fig.tight_layout(pad=1.70, w_pad=3.35, h_pad=1.8)
         return fig
 
 
@@ -7518,14 +7836,28 @@ def run_self_test(base: Path = Path.cwd()) -> None:
     """Small non-GUI smoke test for parsers and PF/IPF rendering."""
     vi = parse_vpsc8_in(base / "vpsc8.in")
     assert vi.phases, "VPSC8.IN phase parsing failed"
-    for sx_name in ["FCC.sx", "Fe3.sx", "Mg.sx", "Mg_voce.sx", "Zr_DD.SX", "AL_MTS.sx"]:
-        sx_path = base / sx_name
+
+    sx_candidates = [ph.crystal_file for ph in vi.phases if ph.crystal_file]
+    sx_candidates += ["FCC.sx", "Fe3.sx", "Mg.sx", "Mg_voce.sx", "Zr_DD.SX", "AL_MTS.sx"]
+    parsed_sx = False
+    for sx_name in sx_candidates:
+        sx_path = resolve_case_file(base, sx_name) or (base / sx_name)
         if sx_path.exists():
             sx = parse_sx(sx_path)
-            assert sx.elastic_matrix.shape == (6, 6), f"bad elastic matrix: {sx_name}"
-    tex = parse_texture(base / "Rand500.tex")
+            assert sx.elastic_matrix.shape == (6, 6), f"bad elastic matrix: {sx_path.name}"
+            parsed_sx = True
+    assert parsed_sx, "no single-crystal file could be parsed"
+
+    tex_candidates = [ph.texture_file for ph in vi.phases if ph.texture_file] + ["Rand500.tex", "rand500.tex"]
+    tex_path = next((resolve_case_file(base, name) for name in tex_candidates if resolve_case_file(base, name)), None)
+    assert tex_path is not None, "no texture file could be resolved"
+    tex = parse_texture(tex_path)
     assert tex.n > 0 and abs(float(tex.weights.sum()) - 1.0) < 1e-8
-    proc = parse_process(base / "rolling.3")
+
+    proc_candidates = vi.process_files + ["rolling.3", "compression.3", "tension.3"]
+    proc_path = next((resolve_case_file(base, name) for name in proc_candidates if resolve_case_file(base, name)), None)
+    assert proc_path is not None, "no process file could be resolved"
+    proc = parse_process(proc_path)
     assert proc.udot.shape == (3, 3)
     fig = Figure(figsize=(7, 3), dpi=100)
     style = PlotStyle(texture_mode="both", cmap="turbo", bins=65, levels=9,

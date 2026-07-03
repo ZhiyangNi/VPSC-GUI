@@ -1,31 +1,23 @@
 cff-version: 1.2.0
-message: "If you use VPSC-GUI in your research, please cite the SoftwareX article and this software release."
+message: "If you use VPSC-GUI in your research, please cite the software release and the associated SoftwareX article."
 title: "VPSC-GUI: A Python graphical pre- and post-processing environment for the Visco-Plastic Self-Consistent code"
-type: software
-version: "1.0.0"
-date-released: "2026-05-29"
-license: "BSD-3-Clause"
-repository-code: "https://github.com/ZhiyangNi/VPSC-GUI"
-url: "https://github.com/ZhiyangNi/VPSC-GUI"
-abstract: "VPSC-GUI is a Python graphical environment for preparing, running and post-processing VPSC8 simulations. It provides structured editors for VPSC input files, boundary-condition visualization, solver execution and direct plotting of standard VPSC output files, while keeping the external VPSC8 solver unchanged and not redistributed."
-keywords:
-  - VPSC
-  - crystal plasticity
-  - polycrystal plasticity
-  - texture
-  - Python GUI
-  - post-processing
+version: "1.0.1"
+date-released: "2026-06-01"
 authors:
   - family-names: "Ni"
     given-names: "Zhiyang"
   - family-names: "Guo"
     given-names: "Min"
-  - family-names: "Chen"
-    given-names: "Zhanghua"
-  - family-names: "Dong"
-    given-names: "Jianxin"
-  - family-names: "Jiang"
-    given-names: "He"
+license: "BSD-3-Clause"
+repository-code: "https://github.com/ZhiyangNi/VPSC-GUI"
+url: "https://github.com/ZhiyangNi/VPSC-GUI"
+keywords:
+  - VPSC
+  - crystal plasticity
+  - texture
+  - pole figure
+  - inverse pole figure
+  - post-processing
 preferred-citation:
   type: article
   title: "VPSC-GUI: A Python graphical pre- and post-processing environment for the Visco-Plastic Self-Consistent code"
@@ -34,12 +26,5 @@ preferred-citation:
       given-names: "Zhiyang"
     - family-names: "Guo"
       given-names: "Min"
-    - family-names: "Chen"
-      given-names: "Zhanghua"
-    - family-names: "Dong"
-      given-names: "Jianxin"
-    - family-names: "Jiang"
-      given-names: "He"
   journal: "SoftwareX"
   year: 2026
-  notes: "Manuscript submitted."
